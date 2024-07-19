@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"time"
 
 	"github.com/yezzey-gp/aws-sdk-go/aws"
 	"github.com/yezzey-gp/aws-sdk-go/service/s3"
@@ -27,10 +28,15 @@ type StorageLister interface {
 	ListPath(prefix string) ([]*S3ObjectMeta, error)
 }
 
+type StorageMover interface {
+	MoveObject(from string, to string) error
+}
+
 type StorageInteractor interface {
 	StorageReader
 	StorageWriter
 	StorageLister
+	StorageMover
 }
 
 type S3StorageInteractor struct {
@@ -121,8 +127,9 @@ func (s *S3StorageInteractor) PatchFile(name string, r io.ReadSeeker, startOffst
 }
 
 type S3ObjectMeta struct {
-	Path string
-	Size int64
+	Path         string
+	Size         int64
+	LastModified time.Time
 }
 
 func (s *S3StorageInteractor) ListPath(prefix string) ([]*S3ObjectMeta, error) {
@@ -150,8 +157,9 @@ func (s *S3StorageInteractor) ListPath(prefix string) ([]*S3ObjectMeta, error) {
 
 		for _, obj := range out.Contents {
 			metas = append(metas, &S3ObjectMeta{
-				Path: *obj.Key,
-				Size: *obj.Size,
+				Path:         *obj.Key,
+				Size:         *obj.Size,
+				LastModified: *obj.LastModified,
 			})
 		}
 
@@ -162,4 +170,38 @@ func (s *S3StorageInteractor) ListPath(prefix string) ([]*S3ObjectMeta, error) {
 		continuationToken = out.NextContinuationToken
 	}
 	return metas, nil
+}
+
+func (s *S3StorageInteractor) MoveObject(from string, to string) error {
+	sess, err := s.pool.GetSession(context.TODO())
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to acquire s3 session")
+		return err
+	}
+
+	fromPath := path.Join(s.cnf.StoragePrefix, from)
+	toPath := path.Join(s.cnf.StoragePrefix, to)
+
+	input := s3.CopyObjectInput{
+		Bucket:     &s.cnf.StorageBucket,
+		CopySource: aws.String(fromPath),
+		Key:        aws.String(toPath),
+	}
+
+	_, err = sess.CopyObject(&input)
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to copy object")
+		return err
+	}
+
+	input2 := s3.DeleteObjectInput{
+		Bucket: &s.cnf.StorageBucket,
+		Key:    aws.String(fromPath),
+	}
+
+	_, err = sess.DeleteObject(&input2)
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to delete old object")
+	}
+	return err
 }

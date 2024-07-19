@@ -22,6 +22,8 @@ var logLevel string
 var decrypt bool
 var encrypt bool
 var offset uint64
+var segmentPort int
+var segmentNum int
 
 var rootCmd = &cobra.Command{
 	Use:   "",
@@ -101,6 +103,49 @@ var copyCmd = &cobra.Command{
 
 		if ansType != message.MessageTypeReadyForQuery {
 			return fmt.Errorf("failed to copy, msg: %v", body)
+		}
+
+		return nil
+	},
+}
+
+var deleteCmd = &cobra.Command{
+	Use:   "delete_garbage",
+	Short: "delete_garbage",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ylogger.Zero.Info().Msg("Execute delete_garbage command")
+		err := config.LoadInstanceConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		instanceCnf := config.InstanceConfig()
+
+		con, err := net.Dial("unix", instanceCnf.SocketPath)
+		if err != nil {
+			return err
+		}
+
+		defer con.Close()
+		ylogger.Zero.Info().Str("name", args[0]).Msg("delete")
+		msg := message.NewDeleteMessage(args[0], segmentPort, segmentNum).Encode()
+		_, err = con.Write(msg)
+		if err != nil {
+			return err
+		}
+
+		ylogger.Zero.Debug().Bytes("msg", msg).Msg("constructed delete msg")
+
+		client := client.NewYClient(con)
+		protoReader := proc.NewProtoReader(client)
+
+		ansType, body, err := protoReader.ReadPacket()
+		if err != nil {
+			ylogger.Zero.Debug().Err(err).Msg("error while recieving answer")
+			return err
+		}
+
+		if ansType != message.MessageTypeReadyForQuery {
+			return fmt.Errorf("failed to delete, msg: %v", body)
 		}
 
 		return nil
@@ -271,6 +316,10 @@ func init() {
 	rootCmd.AddCommand(putCmd)
 
 	rootCmd.AddCommand(listCmd)
+
+	deleteCmd.PersistentFlags().IntVarP(&segmentPort, "port", "p", 6000, "port that segment is listening on")
+	deleteCmd.PersistentFlags().IntVarP(&segmentNum, "segnum", "s", 0, "number of the segment")
+	rootCmd.AddCommand(deleteCmd)
 }
 
 func main() {
