@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strings"
 
 	"github.com/yezzey-gp/aws-sdk-go/aws"
 	"github.com/yezzey-gp/aws-sdk-go/service/s3"
@@ -12,26 +13,6 @@ import (
 	"github.com/yezzey-gp/yproxy/config"
 	"github.com/yezzey-gp/yproxy/pkg/ylogger"
 )
-
-type StorageReader interface {
-	CatFileFromStorage(name string, offset int64) (io.ReadCloser, error)
-	ListPath(name string) ([]*S3ObjectMeta, error)
-}
-
-type StorageWriter interface {
-	PutFileToDest(name string, r io.Reader) error
-	PatchFile(name string, r io.ReadSeeker, startOffste int64) error
-}
-
-type StorageLister interface {
-	ListPath(prefix string) ([]*S3ObjectMeta, error)
-}
-
-type StorageInteractor interface {
-	StorageReader
-	StorageWriter
-	StorageLister
-}
 
 type S3StorageInteractor struct {
 	StorageInteractor
@@ -162,4 +143,63 @@ func (s *S3StorageInteractor) ListPath(prefix string) ([]*S3ObjectMeta, error) {
 		continuationToken = out.NextContinuationToken
 	}
 	return metas, nil
+}
+
+func (s *S3StorageInteractor) MoveObject(from string, to string) error {
+	sess, err := s.pool.GetSession(context.TODO())
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to acquire s3 session")
+		return err
+	}
+	ylogger.Zero.Debug().Msg("aquired session")
+
+	fromPath := from
+	toPath := path.Join(s.cnf.StoragePrefix, to)
+	ylogger.Zero.Debug().Str("to", toPath).Msg("to path")
+
+	input := s3.CopyObjectInput{
+		Bucket:     &s.cnf.StorageBucket,
+		CopySource: aws.String(s.cnf.StorageBucket + "/" + fromPath),
+		Key:        aws.String(toPath),
+	}
+
+	out, err := sess.CopyObject(&input)
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to copy object")
+		return err
+	}
+	ylogger.Zero.Debug().Str("", out.GoString()).Msg("copied object")
+
+	err = s.DeleteObject(fromPath)
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to delete old object")
+	}
+	ylogger.Zero.Debug().Msg("deleted object")
+	return err
+}
+
+func (s *S3StorageInteractor) DeleteObject(key string) error {
+	sess, err := s.pool.GetSession(context.TODO())
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to acquire s3 session")
+		return err
+	}
+	ylogger.Zero.Debug().Msg("aquired session")
+
+	if !strings.HasPrefix(key, s.cnf.StoragePrefix) {
+		key = path.Join(s.cnf.StoragePrefix, key)
+	}
+
+	input2 := s3.DeleteObjectInput{
+		Bucket: &s.cnf.StorageBucket,
+		Key:    aws.String(key),
+	}
+
+	_, err = sess.DeleteObject(&input2)
+	if err != nil {
+		ylogger.Zero.Err(err).Msg("failed to delete old object")
+		return err
+	}
+	ylogger.Zero.Debug().Msg("deleted object")
+	return nil
 }
